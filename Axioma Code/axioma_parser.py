@@ -137,6 +137,9 @@ class StructDef(Node):
 class StructField(Node):
     name:      str
     type_hint: Optional[str]
+    default:   Optional[Node] = None
+    is_static: bool = False
+    immutable: bool = False   # `fixed` / `immutable` field modifier
 
 @dataclass
 class ExprStmt(Node):
@@ -419,6 +422,18 @@ class Parser:
     # ── Statements ────────────────────────────────────────────────────────────
 
     def parse_stmt(self) -> Node:
+        # Tag every top-level statement node with the line/col it started
+        # on. This is a lightweight, non-dataclass attribute (no schema
+        # change needed on ~40 Node subclasses) that the interpreter uses
+        # to report accurate line numbers on runtime errors.
+        start_tok = self.current()
+        node = self._parse_stmt_inner()
+        if not hasattr(node, "line"):
+            node.line = start_tok.line
+            node.col  = start_tok.col
+        return node
+
+    def _parse_stmt_inner(self) -> Node:
         t = self.current()
 
         # keyword-dispatched statements
@@ -666,7 +681,11 @@ class Parser:
             error_type = None
             alias      = None
             t = self.current()
-            if t.type in (TT.IDENT, TT.KEYWORD):
+            # A type name may precede `as` (`catch SomeError as e`), but a
+            # bare `catch as e` (no type filter) must not have "as" itself
+            # mistaken for the type name — that was swallowing the
+            # following alias and breaking `catch as e begin ... end`.
+            if t.type in (TT.IDENT, TT.KEYWORD) and t.value != "as":
                 error_type = self.advance().value
             if self.is_kw("as"):
                 self.advance()
@@ -760,26 +779,54 @@ class Parser:
 
         members = []
         while not self.is_kw("end") and not self.check(TT.EOF):
-            # method definition
+            is_static = False
+            is_fixed  = False
+            # `static` and `fixed`/`immutable` are member modifiers that
+            # can prefix either a `property` field or a `where` method.
+            while self.is_kw("static") or self.is_kw("fixed") or self.is_kw("immutable"):
+                if self.is_kw("static"):
+                    is_static = True
+                else:
+                    is_fixed = True
+                self.advance()
+
             if self.is_kw("where"):
                 members.append(self.parse_func_def())
             elif self.is_kw("create"):
                 members.append(self._parse_constructor())
-            elif self.is_kw("static") or self.is_kw("property"):
-                members.append(self.parse_func_def())
+            elif self.is_kw("property"):
+                self.advance()
+                members.append(self._parse_struct_field(is_static, is_fixed))
             elif self.current().type == TT.IDENT:
-                # field: name : Type
-                fname = self.advance().value
-                ftype = None
-                if self.match(TT.COLON):
-                    ftype = self._read_type()
-                members.append(StructField(fname, ftype))
+                # bare field: name [: Type] [:= default]
+                members.append(self._parse_struct_field(is_static, is_fixed))
             else:
                 break
             self.skip_newlines()
 
         self.expect_kw("end")
         return StructDef(name, base, immutable, members)
+
+    def expect_field_name(self) -> str:
+        """A struct field / property name: IDENT, or a KEYWORD used as a
+        field name (e.g. `next`, `prev`, `type`) — common for linked
+        structures where the natural name collides with a reserved word."""
+        t = self.current()
+        if t.type in (TT.IDENT, TT.KEYWORD):
+            self.advance()
+            return t.value
+        raise ParseError("Expected a field name", t)
+
+    def _parse_struct_field(self, is_static: bool, is_fixed: bool) -> StructField:
+        """name [: Type] [:= default_expr]  (the 'property'/'static'/'fixed' prefix, if any, is already consumed)"""
+        fname = self.expect_field_name()
+        ftype = None
+        if self.match(TT.COLON):
+            ftype = self._read_type()
+        default = None
+        if self.match(TT.ASSIGN):
+            default = self.parse_expr()
+        return StructField(fname, ftype, default, is_static, is_fixed)
 
     def _parse_constructor(self) -> FuncDef:
         """create(params) begin ... end"""
@@ -954,7 +1001,10 @@ class Parser:
 
             elif self.match(TT.PRIME):
                 # projection: obj'field or obj'method(...)
-                field = self.expect(TT.IDENT).value
+                # Field names may legitimately collide with reserved words
+                # (e.g. linked-list `next`/`prev` fields), so accept a
+                # KEYWORD token here too, not just IDENT.
+                field = self.expect_field_name()
                 node = Projection(node, field)
 
             elif self.match(TT.LBRACKET):

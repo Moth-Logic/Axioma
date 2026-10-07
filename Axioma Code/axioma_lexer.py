@@ -157,6 +157,22 @@ MATH_SETS = {"NN", "ZZ", "QQ", "II", "RR", "ii", "CC"}
 BOOL_LITERALS = {"T", "F"}
 NULL_LITERAL  = "Null"
 
+# Canonical Axioma source file extension.
+SOURCE_EXTENSION = ".axm"
+
+# Single-character token table — built once at import time instead of on
+# every call to _scan_token() (was previously a fresh dict literal per token).
+_SINGLE_CHAR_TOKENS = {
+    "(": TT.LPAREN,  ")": TT.RPAREN,
+    "[": TT.LBRACKET,"]": TT.RBRACKET,
+    "{": TT.LBRACE,  "}": TT.RBRACE,
+    ",": TT.COMMA,   ";": TT.SEMICOLON,
+    "#": TT.HASH,    "'": TT.PRIME,
+    "@": TT.AT,      "?": TT.QUESTION,
+    "^": TT.CARET,   "~": TT.TILDE,
+    "%": TT.PERCENT, "_": TT.UNDERSCORE,
+}
+
 
 # ── Token dataclass ───────────────────────────────────────────────────────────
 
@@ -247,15 +263,21 @@ class Lexer:
                 self.add(TT.NEWLINE, "\n", line, col)
             return
 
-        # ── Comments: -- ──────────────────────────────────────────────────────
+        # ── Comments: -- / arrow: -> / minus / -= ──────────────────────────────
         if ch == "-":
             if self.current() == "-":
                 self.advance()                      # consume second -
                 text = self._read_until_newline()
                 self.add(TT.COMMENT, text.strip(), line, col)
                 return
-            # Otherwise it's minus or -=
-            if self.match("="):
+            # BUGFIX: '->' must be checked here, before falling back to
+            # MINUS/-=. It previously lived in unreachable code further
+            # down this function (this whole `ch == "-"` branch always
+            # returns), so ARROW was never emitted and every lambda
+            # `(x) -> expr` failed to parse.
+            if self.match(">"):
+                self.add(TT.ARROW, "->", line, col)
+            elif self.match("="):
                 self.add(TT.MINUSEQ, "-=", line, col)
             else:
                 self.add(TT.MINUS, "-", line, col)
@@ -386,30 +408,9 @@ class Lexer:
                 self.add(TT.PLUS, "+", line, col)
             return
 
-        if ch == "-":
-            if self.match("="):
-                self.add(TT.MINUSEQ, "-=", line, col)
-            else:
-                self.add(TT.MINUS, "-", line, col)
-            return
-
-        if ch == "-" and self.match(">"):
-            self.add(TT.ARROW, "->", line, col)
-            return
-
         # ── Single-character tokens ───────────────────────────────────────────
-        SINGLE = {
-            "(": TT.LPAREN,  ")": TT.RPAREN,
-            "[": TT.LBRACKET,"]": TT.RBRACKET,
-            "{": TT.LBRACE,  "}": TT.RBRACE,
-            ",": TT.COMMA,   ";": TT.SEMICOLON,
-            "#": TT.HASH,    "'": TT.PRIME,
-            "@": TT.AT,      "?": TT.QUESTION,
-            "^": TT.CARET,   "~": TT.TILDE,
-            "%": TT.PERCENT, "_": TT.UNDERSCORE,
-        }
-        if ch in SINGLE:
-            self.add(SINGLE[ch], ch, line, col)
+        if ch in _SINGLE_CHAR_TOKENS:
+            self.add(_SINGLE_CHAR_TOKENS[ch], ch, line, col)
             return
 
         raise LexerError(f"Unexpected character {ch!r}", line, col)

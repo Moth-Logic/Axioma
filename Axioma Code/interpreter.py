@@ -14,7 +14,7 @@ import math
 import re
 from typing import Any, List, Optional
 
-from axioma_lexer import Lexer
+from axioma_lexer import Lexer, SOURCE_EXTENSION
 from axioma_parser import (
     Parser, Node,
     Program, Block, VarDecl, FuncDef, Param, ReturnStmt,
@@ -47,10 +47,19 @@ class NextSignal(Exception):   # continue
     pass
 
 class AxiomaError(Exception):  # abort
-    def __init__(self, value: Any, cause: Any = None):
+    def __init__(self, value: Any, cause: Any = None, line: Optional[int] = None, col: Optional[int] = None):
         self.value = value
         self.cause = cause
+        self.line  = line
+        self.col   = col
         super().__init__(str(value))
+
+    def __str__(self):
+        base = str(self.value)
+        if self.line is not None:
+            loc = f"line {self.line}" + (f", col {self.col}" if self.col is not None else "")
+            return f"{base} (at {loc})"
+        return base
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -63,10 +72,15 @@ class Environment:
         self.parent: Optional[Environment] = parent
 
     def get(self, name: str) -> Any:
-        if name in self.vars:
-            return self.vars[name]
-        if self.parent:
-            return self.parent.get(name)
+        # Iterative walk instead of recursive — avoids one Python stack
+        # frame per enclosing scope on every single variable read, which
+        # matters for deeply nested blocks/recursive functions.
+        env = self
+        while env is not None:
+            v = env.vars
+            if name in v:
+                return v[name]
+            env = env.parent
         raise AxiomaError(f"Undefined variable '{name}'")
 
     def set(self, name: str, value: Any):
@@ -75,22 +89,23 @@ class Environment:
 
     def assign(self, name: str, value: Any):
         """Assign to existing variable — walk up scopes."""
-        if name in self.vars:
-            self.vars[name] = value
-            return
-        if self.parent:
-            self.parent.assign(name, value)
-            return
-        # not found anywhere — create in current scope
+        env = self
+        while env is not None:
+            if name in env.vars:
+                env.vars[name] = value
+                return
+            env = env.parent
+        # not found anywhere — create in current (innermost) scope
         self.vars[name] = value
 
     def drop(self, name: str):
-        if name in self.vars:
-            del self.vars[name]
-        elif self.parent:
-            self.parent.drop(name)
-        else:
-            raise AxiomaError(f"Cannot drop undefined variable '{name}'")
+        env = self
+        while env is not None:
+            if name in env.vars:
+                del env.vars[name]
+                return
+            env = env.parent
+        raise AxiomaError(f"Cannot drop undefined variable '{name}'")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -120,6 +135,9 @@ class AxiomaStructClass:
     def __init__(self, node: StructDef, closure: Environment):
         self.node    = node
         self.closure = closure
+        self.statics: dict[str, Any] = {}   # `static property` fields — shared across instances
+        self.immutable_fields: set = {f.name for f in node.members
+                                       if isinstance(f, StructField) and f.immutable}
 
     def __repr__(self):
         return f"<structure {self.node.name}>"
@@ -130,6 +148,10 @@ class AxiomaInstance:
     def __init__(self, struct_class: AxiomaStructClass):
         self.struct_class = struct_class
         self.fields: dict[str, Any] = {}
+        # Flipped to True once create() has finished running; `fixed`
+        # fields can only be written before this point (i.e. during
+        # field-default init and inside create() itself).
+        self.locked = False
 
     def __repr__(self):
         fields = ", ".join(f"{k}: {axioma_repr(v)}" for k, v in self.fields.items())
@@ -182,34 +204,56 @@ def axioma_str(value: Any) -> str:
     return str(value)
 
 
-def resolve_interpolation(raw: str, env: Environment) -> str:
-    """Replace {varname} placeholders in an s"..." string."""
+_INTERP_RE = re.compile(r"\{([^}]+)\}")
+
+def resolve_interpolation(raw: str, env: Environment, interp: "Interpreter") -> str:
+    """Replace {varname} placeholders in an s"..." string.
+
+    Reuses the *existing* Interpreter instance (and its builtins/dispatch
+    tables) instead of constructing a brand-new Interpreter() per string —
+    the previous version rebuilt the entire builtins dict on every single
+    s"..." evaluated, which is wasteful inside loops.
+    """
     def replacer(m):
         expr_src = m.group(1).strip()
+        tokens = Lexer(expr_src).tokenize()
+        node   = Parser(tokens).parse()
+        # parse() returns a Program; evaluate its first statement
+        first = node.body[0]
+        expr  = first.expr if hasattr(first, "expr") else first
+        saved_env = interp.env
+        interp.env = env
         try:
-            tokens = Lexer(expr_src).tokenize()
-            node   = Parser(tokens).parse()
-            # parse() returns a Program; evaluate its first statement
-            interp = Interpreter()
-            interp.env = env
-            val = interp.eval_expr(node.body[0].expr if hasattr(node.body[0], 'expr') else node.body[0])
-            return axioma_str(val)
-        except Exception:
-            return m.group(0)
-    return re.sub(r"\{([^}]+)\}", replacer, raw)
+            val = interp.eval_expr(expr)
+        finally:
+            interp.env = saved_env
+        return axioma_str(val)
+    return _INTERP_RE.sub(replacer, raw)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Built-in functions
 # ══════════════════════════════════════════════════════════════════════════════
 
-def make_builtins() -> dict[str, Any]:
+def make_builtins(interp: "Interpreter") -> dict[str, Any]:
+    # Local alias so every existing `_call_fn(fn, args)` call site below
+    # keeps working unchanged, but now dispatches through the *real*,
+    # already-constructed Interpreter (its dispatch tables, builtins and
+    # current env) instead of building a brand-new Interpreter() — with a
+    # brand-new builtins dict — on every single call. That used to happen
+    # once per loop iteration inside apply/select/fold/sum/prod/deriv/integ,
+    # which was the single biggest performance sink in the runtime.
+    _call_fn = interp._invoke
+
     def builtin_out(*args):
         print(*[axioma_str(a) for a in args])
         return None
 
     def builtin_in(prompt=""):
         return input(axioma_str(prompt) if prompt != "" else "")
+
+    def builtin_is_null(x):
+        return x is None
 
     def builtin_type(x):
         if x is None:               return "Null"
@@ -301,6 +345,12 @@ def make_builtins() -> dict[str, Any]:
 
     def builtin_is_function(x):
         return isinstance(x, (AxiomaFunction, AxiomaLambda))
+
+    def builtin_contains(collection, item):
+        try:
+            return item in collection
+        except TypeError:
+            raise AxiomaError(f"contains() cannot test membership on {axioma_repr(collection)}")
 
     def builtin_exists(seq, fn):
         return any(_call_fn(fn, [x]) for x in seq)
@@ -396,6 +446,7 @@ def make_builtins() -> dict[str, Any]:
         "out":        builtin_out,
         "in":         builtin_in,
         "type":       builtin_type,
+        "is_null":    builtin_is_null,
         "sup":        builtin_sup,
         "inf":        builtin_inf,
         "sort":       builtin_sort,
@@ -418,6 +469,7 @@ def make_builtins() -> dict[str, Any]:
         "identity":   builtin_identity,
         "is_function":builtin_is_function,
         "exists":     builtin_exists,
+        "contains":   builtin_contains,
         "forall":     builtin_forall,
         "plot":       builtin_plot,
         "sum":        builtin_sum,
@@ -443,11 +495,6 @@ def make_builtins() -> dict[str, Any]:
     }
 
 
-def _call_fn(fn: Any, args: list) -> Any:
-    """Call an AxiomaFunction or AxiomaLambda with positional args."""
-    interp = Interpreter()
-    return interp._invoke(fn, args)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Interpreter
@@ -456,9 +503,19 @@ def _call_fn(fn: Any, args: list) -> Any:
 class Interpreter:
     def __init__(self):
         self.global_env = Environment()
-        for name, val in make_builtins().items():
+        for name, val in make_builtins(self).items():
             self.global_env.set(name, val)
         self.env = self.global_env
+        # Updated before every top-level statement executes; used to attach
+        # line/col context to runtime errors that didn't originate with an
+        # explicit location (e.g. AxiomaError raised deep in a builtin).
+        self.current_line: Optional[int] = None
+        self.current_col:  Optional[int] = None
+        # Dispatch tables built once per interpreter instance rather than
+        # walked as an if/elif chain on every single statement/expression —
+        # O(1) dict lookup instead of O(n) type comparisons.
+        self._stmt_dispatch = self._build_stmt_dispatch()
+        self._expr_dispatch = self._build_expr_dispatch()
 
     # ── Public entry point ────────────────────────────────────────────────────
 
@@ -468,6 +525,10 @@ class Interpreter:
         self.exec_program(ast)
 
     def run_file(self, path: str):
+        if not path.endswith(SOURCE_EXTENSION):
+            raise AxiomaError(
+                f"Expected an Axioma source file ending in '{SOURCE_EXTENSION}', got '{path}'"
+            )
         with open(path, "r", encoding="utf-8") as f:
             self.run(f.read())
 
@@ -492,34 +553,65 @@ class Interpreter:
 
     # ── Statement dispatcher ──────────────────────────────────────────────────
 
-    def exec_stmt(self, node: Node):
-        t = type(node)
+    def _build_stmt_dispatch(self):
+        return {
+            VarDecl:     self.exec_var_decl,
+            FuncDef:     self.exec_func_def,
+            ReturnStmt:  self._exec_return,
+            IfStmt:      self.exec_if,
+            EachStmt:    self.exec_each,
+            RepeatStmt:  self.exec_repeat,
+            MatchStmt:   self.exec_match,
+            CheckStmt:   self.exec_check,
+            AbortStmt:   self.exec_abort,
+            UsingStmt:   self._noop,   # module system: skip for now
+            FromStmt:    self._noop,
+            StructDef:   self.exec_struct_def,
+            ExprStmt:    lambda n: self.eval_expr(n.expr),
+            SkipStmt:    self._noop,
+            StopStmt:    self._raise_stop,
+            NextStmt:    self._raise_next,
+            DropStmt:    lambda n: self.env.drop(n.name),
+            VerifyStmt:  self.exec_verify,
+            EmitStmt:    self._exec_return,
+            ExpandStmt:  self.exec_expand,
+            UsingAsStmt: self.exec_using_as,
+            IfMain:      lambda n: self.exec_block(n.body),
+            Assign:      self.exec_assign,
+        }
 
-        if t == VarDecl:      self.exec_var_decl(node)
-        elif t == FuncDef:    self.exec_func_def(node)
-        elif t == ReturnStmt: raise ReturnSignal(self.eval_expr(node.value))
-        elif t == IfStmt:     self.exec_if(node)
-        elif t == EachStmt:   self.exec_each(node)
-        elif t == RepeatStmt: self.exec_repeat(node)
-        elif t == MatchStmt:  self.exec_match(node)
-        elif t == CheckStmt:  self.exec_check(node)
-        elif t == AbortStmt:  self.exec_abort(node)
-        elif t == UsingStmt:  pass   # module system: skip for now
-        elif t == FromStmt:   pass
-        elif t == StructDef:  self.exec_struct_def(node)
-        elif t == ExprStmt:   self.eval_expr(node.expr)
-        elif t == SkipStmt:   pass
-        elif t == StopStmt:   raise StopSignal()
-        elif t == NextStmt:   raise NextSignal()
-        elif t == DropStmt:   self.env.drop(node.name)
-        elif t == VerifyStmt: self.exec_verify(node)
-        elif t == EmitStmt:   raise ReturnSignal(self.eval_expr(node.value))
-        elif t == ExpandStmt: self.exec_expand(node)
-        elif t == UsingAsStmt:self.exec_using_as(node)
-        elif t == IfMain:     self.exec_block(node.body)
-        elif t == Assign:     self.exec_assign(node)
-        else:
-            raise AxiomaError(f"Unknown statement type: {t.__name__}")
+    @staticmethod
+    def _noop(node):
+        pass
+
+    @staticmethod
+    def _raise_stop(node):
+        raise StopSignal()
+
+    @staticmethod
+    def _raise_next(node):
+        raise NextSignal()
+
+    def _exec_return(self, node):
+        raise ReturnSignal(self.eval_expr(node.value))
+
+    def exec_stmt(self, node: Node):
+        line = getattr(node, "line", None)
+        if line is not None:
+            self.current_line = line
+            self.current_col  = getattr(node, "col", None)
+
+        handler = self._stmt_dispatch.get(type(node))
+        if handler is None:
+            raise AxiomaError(f"Unknown statement type: {type(node).__name__}",
+                               line=self.current_line, col=self.current_col)
+
+        try:
+            handler(node)
+        except AxiomaError as e:
+            if e.line is None:
+                e.line, e.col = self.current_line, self.current_col
+            raise
 
     # ── Variable declaration ──────────────────────────────────────────────────
 
@@ -538,6 +630,19 @@ class Interpreter:
     def exec_struct_def(self, node: StructDef):
         cls = AxiomaStructClass(node, self.env)
         self.env.set(node.name, cls)
+        # `static property` fields belong to the class itself, initialized
+        # once here (not per-instance) and shared by every instance.
+        env = Environment(parent=cls.closure)
+        outer = self.env
+        self.env = env
+        try:
+            for member in node.members:
+                if isinstance(member, StructField) and member.is_static:
+                    cls.statics[member.name] = (
+                        self.eval_expr(member.default) if member.default is not None else None
+                    )
+        finally:
+            self.env = outer
 
     # ── If statement ──────────────────────────────────────────────────────────
 
@@ -589,6 +694,23 @@ class Interpreter:
 
     # ── check / catch / resolve / always ─────────────────────────────────────
 
+    @staticmethod
+    def _error_type_name(value: Any) -> str:
+        """The name a `catch <Type> as e` clause matches against.
+
+        Axioma has no formal exception-class hierarchy: `abort` can raise
+        any value. A raw string (the common `abort "message"` case) is a
+        generic Error — matching the manual's idiomatic `catch Error as e`.
+        A structure instance (a user-defined "typed" exception, e.g.
+        `abort OutOfRange(i)`) matches by its structure name instead, so
+        typed error handling works for custom TDA-based error types too.
+        """
+        if isinstance(value, AxiomaInstance):
+            return value.struct_class.node.name
+        if isinstance(value, str):
+            return "Error"
+        return type(value).__name__
+
     def exec_check(self, node: CheckStmt):
         error_occurred = False
         try:
@@ -597,11 +719,14 @@ class Interpreter:
             error_occurred = True
             handled = False
             for clause in node.catches:
-                # match by type name or catch-all
-                if clause.error_type is None or clause.error_type == type(e.value).__name__ or True:
+                # BUGFIX: this used to end with `... or True`, which made
+                # every catch clause match unconditionally regardless of
+                # `error_type` — a typed `catch OutOfRange as e` would
+                # silently swallow completely unrelated errors too.
+                if clause.error_type is None or clause.error_type == self._error_type_name(e.value):
                     env = Environment(parent=self.env)
                     if clause.alias:
-                        env.set(clause.alias, str(e.value))
+                        env.set(clause.alias, e.value)
                     self.exec_block(clause.body, env)
                     handled = True
                     break
@@ -671,8 +796,12 @@ class Interpreter:
             return self.env.get(target.name)
         if isinstance(target, Projection):
             obj = self.eval_expr(target.obj)
+            if isinstance(obj, AxiomaStructClass):
+                return obj.statics.get(target.field)
             if isinstance(obj, AxiomaInstance):
-                return obj.fields.get(target.field)
+                if target.field in obj.fields:
+                    return obj.fields[target.field]
+                return obj.struct_class.statics.get(target.field)
         raise AxiomaError(f"Cannot resolve assignment target")
 
     def _assign_target(self, target: Node, value: Any):
@@ -680,8 +809,20 @@ class Interpreter:
             self.env.assign(target.name, value)
         elif isinstance(target, Projection):
             obj = self.eval_expr(target.obj)
-            if isinstance(obj, AxiomaInstance):
-                obj.fields[target.field] = value
+            if isinstance(obj, AxiomaStructClass):
+                if target.field not in obj.statics:
+                    raise AxiomaError(f"'{obj.node.name}' has no static property '{target.field}'")
+                obj.statics[target.field] = value
+            elif isinstance(obj, AxiomaInstance):
+                cls = obj.struct_class
+                if target.field in cls.immutable_fields and obj.locked:
+                    raise AxiomaError(
+                        f"Cannot reassign '{target.field}' — declared 'fixed' on structure '{cls.node.name}'"
+                    )
+                if target.field in cls.statics:
+                    cls.statics[target.field] = value
+                else:
+                    obj.fields[target.field] = value
             else:
                 raise AxiomaError(f"Cannot set field on non-instance")
         elif isinstance(target, Subscript):
@@ -700,36 +841,50 @@ class Interpreter:
     #  Expression evaluator
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _build_expr_dispatch(self):
+        return {
+            Literal:            lambda n: n.value,
+            InterpolatedString: lambda n: resolve_interpolation(n.raw, self.env, self),
+            MathSet:            lambda n: n.name,   # just a string tag for now
+            Identifier:         self._eval_ident,
+            BinaryOp:           self._eval_binary,
+            UnaryOp:            self._eval_unary,
+            LenOp:              lambda n: len(self.eval_expr(n.operand)),
+            Call:               self._eval_call,
+            Projection:         self._eval_projection,
+            Subscript:          self._eval_subscript,
+            Slice:              self._eval_slice,
+            Range:              self._eval_range,
+            Ternary:            self._eval_ternary,
+            LambdaExpr:         lambda n: AxiomaLambda(n, self.env),
+            ListExpr:           lambda n: [self.eval_expr(e) for e in n.elements],
+            SetExpr:            lambda n: set(self.eval_expr(e) for e in n.elements),
+            MappingExpr:        lambda n: {self.eval_expr(k): self.eval_expr(v) for k, v in n.pairs},
+            ListComp:           self._eval_list_comp,
+            SetComp:            self._eval_set_comp,
+            MappingComp:        self._eval_mapping_comp,
+            GeneratorComp:      self._eval_generator_comp,
+            Assign:             self._eval_assign_expr,
+            CollectExpr:        lambda n: self.eval_expr(n.value),   # sync for now
+            SpawnExpr:          lambda n: self.eval_expr(n.value),   # sync for now
+            ExprStmt:           lambda n: self.eval_expr(n.expr),
+        }
+
+    def _eval_assign_expr(self, node):
+        self.exec_assign(node)
+        return None
+
     def eval_expr(self, node: Node) -> Any:
-        t = type(node)
-
-        if t == Literal:             return node.value
-        if t == InterpolatedString:  return resolve_interpolation(node.raw, self.env)
-        if t == MathSet:             return node.name   # just a string tag for now
-        if t == Identifier:          return self._eval_ident(node)
-        if t == BinaryOp:            return self._eval_binary(node)
-        if t == UnaryOp:             return self._eval_unary(node)
-        if t == LenOp:               return len(self.eval_expr(node.operand))
-        if t == Call:                return self._eval_call(node)
-        if t == Projection:          return self._eval_projection(node)
-        if t == Subscript:           return self._eval_subscript(node)
-        if t == Slice:               return self._eval_slice(node)
-        if t == Range:               return self._eval_range(node)
-        if t == Ternary:             return self._eval_ternary(node)
-        if t == LambdaExpr:          return AxiomaLambda(node, self.env)
-        if t == ListExpr:            return [self.eval_expr(e) for e in node.elements]
-        if t == SetExpr:             return set(self.eval_expr(e) for e in node.elements)
-        if t == MappingExpr:         return {self.eval_expr(k): self.eval_expr(v) for k, v in node.pairs}
-        if t == ListComp:            return self._eval_list_comp(node)
-        if t == SetComp:             return self._eval_set_comp(node)
-        if t == MappingComp:         return self._eval_mapping_comp(node)
-        if t == GeneratorComp:       return self._eval_generator_comp(node)
-        if t == Assign:              self.exec_assign(node); return None
-        if t == CollectExpr:         return self.eval_expr(node.value)   # sync for now
-        if t == SpawnExpr:           return self.eval_expr(node.value)   # sync for now
-        if t == ExprStmt:            return self.eval_expr(node.expr)
-
-        raise AxiomaError(f"Unknown expression type: {t.__name__}")
+        handler = self._expr_dispatch.get(type(node))
+        if handler is None:
+            raise AxiomaError(f"Unknown expression type: {type(node).__name__}",
+                               line=self.current_line, col=self.current_col)
+        try:
+            return handler(node)
+        except AxiomaError as e:
+            if e.line is None:
+                e.line, e.col = self.current_line, self.current_col
+            raise
 
     # ── Identifier ────────────────────────────────────────────────────────────
 
@@ -876,13 +1031,25 @@ class Interpreter:
         outer = self.env
         self.env = env
 
-        # find and run create()
-        for member in cls.node.members:
-            if isinstance(member, FuncDef) and member.name == "create":
-                self._call_axioma_fn(member, env, args)
-                break
+        try:
+            # Declared instance fields (`property x [:= default]` or bare
+            # `x : Type`) get initialized — to their default, or Null if
+            # none — before create() runs, so every declared field always
+            # exists on the instance (create() can still overwrite it).
+            for member in cls.node.members:
+                if isinstance(member, StructField) and not member.is_static:
+                    instance.fields[member.name] = (
+                        self.eval_expr(member.default) if member.default is not None else None
+                    )
 
-        self.env = outer
+            # find and run create()
+            for member in cls.node.members:
+                if isinstance(member, FuncDef) and member.name == "create":
+                    self._call_axioma_fn(member, env, args)
+                    break
+            instance.locked = True
+        finally:
+            self.env = outer
         return instance
 
     def _call_method(self, instance: AxiomaInstance, method_name: str, args: list) -> Any:
@@ -899,12 +1066,22 @@ class Interpreter:
     def _eval_projection(self, node: Projection) -> Any:
         obj = self.eval_expr(node.obj)
 
+        # ClassName'staticField — static/class-level access via the class
+        # object itself, not through an instance.
+        if isinstance(obj, AxiomaStructClass):
+            if node.field in obj.statics:
+                return obj.statics[node.field]
+            raise AxiomaError(f"'{obj.node.name}' has no static property '{node.field}'")
+
         if isinstance(obj, AxiomaInstance):
-            # Check fields first
+            # Check instance fields first
             if node.field in obj.fields:
                 return obj.fields[node.field]
-            # Then check methods
             cls = obj.struct_class
+            # Then class-level (`static property`) fields
+            if node.field in cls.statics:
+                return cls.statics[node.field]
+            # Then methods
             for member in cls.node.members:
                 if isinstance(member, FuncDef) and member.name == node.field:
                     # Return a bound method
