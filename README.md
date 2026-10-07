@@ -103,3 +103,77 @@ no new syntax was needed for that part. What's new:
 
 See the full guide (`axioma_guide.html` / the published IDE) for worked
 linked-list, binary-tree, and graph examples.
+
+# Axioma IDE — How to Use It
+
+The Axioma IDE is a web page where you can write and run programs in the
+Axioma language straight from your browser. You don't need to install
+anything: no Python, no Node, no extra program. Everything runs on the page.
+
+## 1. Open the IDE
+
+Open the `axioma_ide.html` file (or the link you were given) in your
+browser. You'll see two columns:
+
+- **Left (EDITOR):** this is where you write your Axioma code.
+- **Right (CONSOLE):** this is where your program's output shows up, or
+  the error message if something went wrong.
+
+## 2. Run a program
+
+There are two ways to run the code in the editor:
+
+1. Click the **▶ Ejecutar** button (top center — "Ejecutar" is Spanish
+   for "Run").
+2. Or use the keyboard shortcut **Ctrl+Enter** (on Mac: **⌘+Enter**).
+
+The result shows up in the console, on the right. If the program has an
+error, it appears in red with the line number where it happened.
+
+## 3. Try the examples
+
+In the top left there's a dropdown menu labeled **"Ejemplos…"** ("Examples…").
+In there you'll find ready-made programs, organized into two groups:
+
+- **Básicos** ("Basics") — the first thing you should try: Hello World,
+  variables, conditionals, loops, functions, lists, etc.
+- **Avanzados (TDA, nodos, errores)** ("Advanced: ADTs, nodes, errors") —
+  structures (abstract data types), linked lists, trees, graphs, and
+  error handling.
+
+Pick one and the code automatically appears in the editor. Then press
+**Ejecutar** to see it run. You can freely edit an example's code to
+experiment with it.
+
+## 4. Save and open your own files
+
+- **Guardar .axm** ("Save") downloads the code currently in the editor
+  as an `.axm` file to your computer.
+- **Abrir .axm** ("Open") loads an `.axm` file you already have saved,
+  so you can keep editing it.
+
+`.axm` is the official file extension for Axioma source code (the same
+way `.py` is for Python or `.java` is for Java).
+
+## 5. Switch theme (light/dark)
+
+The little moon button (☾) in the top right corner switches between
+dark and light theme.
+
+## Something's not working — what do I do?
+
+- If you see a red error in the console, read it: it usually tells you
+  what went wrong and on which line of your code.
+- If the error is a "Parser" error (syntax error), check that you
+  haven't forgotten an `end`, a `begin`, or that your parentheses `()`
+  are properly closed.
+- If you want to start fresh, just clear all the code in the editor and
+  write your own, or pick an example from the menu as a starting point.
+
+## What's running under the hood?
+
+The IDE includes a complete implementation of the Axioma language written
+in JavaScript (the lexer, the parser, and the interpreter), so everything
+runs inside the page itself — it doesn't depend on any external server.
+It's the same language as the Python engine (`axioma_lexer.py`,
+`axioma_parser.py`, `interpreter.py`), just rewritten for the browser.

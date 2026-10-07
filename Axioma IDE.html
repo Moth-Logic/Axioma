@@ -123,32 +123,32 @@ footer a { color: var(--ink-dim); }
 <body>
 <div class="app">
   <header>
-    <div class="brand"><span class="mark">Axioma</span><span class="tag">IDE — lenguaje matemático de programación</span></div>
+    <div class="brand"><span class="mark">Axioma</span><span class="tag">IDE — a mathematical programming language</span></div>
     <div class="toolbar">
       <select id="examples"></select>
-      <button id="btn-run" class="primary">▶ Ejecutar<span class="kbd">⌘/Ctrl+Enter</span></button>
-      <button id="btn-load" class="ghost">Abrir .axm</button>
+      <button id="btn-run" class="primary">▶ Run<span class="kbd">⌘/Ctrl+Enter</span></button>
+      <button id="btn-load" class="ghost">Open .axm</button>
       <input id="file-input" type="file" accept=".axm">
-      <button id="btn-save" class="ghost">Guardar .axm</button>
-      <button id="btn-theme" class="ghost" title="Cambiar tema">☾</button>
+      <button id="btn-save" class="ghost">Save .axm</button>
+      <button id="btn-theme" class="ghost" title="Switch theme">☾</button>
     </div>
   </header>
   <main>
     <section class="pane">
-      <div class="pane-head"><span>EDITOR — programa.axm</span><span id="pos">1:1</span></div>
+      <div class="pane-head"><span>EDITOR — program.axm</span><span id="pos">1:1</span></div>
       <div id="editor-host"></div>
     </section>
     <section class="pane">
       <div class="pane-head">
-        <span>CONSOLA</span>
-        <span class="status"><span id="status-dot" class="dot"></span><span id="status-text">listo</span></span>
+        <span>CONSOLE</span>
+        <span class="status"><span id="status-dot" class="dot"></span><span id="status-text">ready</span></span>
       </div>
-      <div id="console"><div class="line welcome">// La salida de tu programa Axioma aparecerá aquí. Presiona «Ejecutar» para comenzar.</div></div>
+      <div id="console"><div class="line welcome">// Your Axioma program's output will appear here. Press "Run" to get started.</div></div>
     </section>
   </main>
   <footer>
-    <span>Motor Axioma — implementación nativa en JavaScript, sin dependencias externas de ejecución.</span>
-    <span>Extensión de archivo: <code>.axm</code></span>
+    <span>Axioma engine — native JavaScript implementation, no external runtime dependencies.</span>
+    <span>File extension: <code>.axm</code></span>
   </footer>
 </div>
 
@@ -1425,8 +1425,8 @@ global.AxiomaInterpreter = {
 <script>
 window.__AXIOMA_EXAMPLES__ = [
 {
-  label: "Lista enlazada (Node, next)",
-  src: `-- Lista enlazada simple usando una estructura con referencia 'next'
+  category: "Advanced (ADTs, nodes, errors)", label: "Linked list (Node, next)",
+  src: `-- Simple linked list using a structure with a 'next' reference
 structure Node :=
   property value
   property next := Null
@@ -1448,8 +1448,8 @@ end until is_null(cur)
 `
 },
 {
-  label: "Árbol binario (TreeNode, left/right)",
-  src: `-- Árbol binario de búsqueda construido con estructuras TDA
+  category: "Advanced (ADTs, nodes, errors)", label: "Binary tree (TreeNode, left/right)",
+  src: `-- Binary search tree built with TDA structures
 structure TreeNode :=
   property value
   property left  := Null
@@ -1489,8 +1489,8 @@ root'inorder()
 `
 },
 {
-  label: "Grafo (lista de adyacencia)",
-  src: `-- Grafo no dirigido representado con una Mapping (lista de adyacencia)
+  category: "Advanced (ADTs, nodes, errors)", label: "Graph (adjacency list)",
+  src: `-- Undirected graph represented with a Mapping (adjacency list)
 structure Graph :=
   property adj := Mapping()
 
@@ -1512,9 +1512,9 @@ out(g'adj)
 `
 },
 {
-  label: "Campos static y fixed (TDA)",
-  src: `-- 'static property' es compartido entre instancias.
--- 'fixed property' solo puede asignarse durante create().
+  category: "Advanced (ADTs, nodes, errors)", label: "static and fixed fields (TDA)",
+  src: `-- 'static property' is shared across every instance.
+-- 'fixed property' can only be assigned during create().
 structure Counter :=
   static property count := 0
 
@@ -1526,7 +1526,7 @@ end
 let a := Counter()
 let b := Counter()
 let c := Counter()
-out(s"instancias creadas: {Counter'count}")
+out(s"instances created: {Counter'count}")
 
 structure Point(immutable) :=
   fixed property x
@@ -1544,14 +1544,14 @@ check begin
   p'x := 99
 end
 catch as e begin
-  out(s"capturado: {e}")
+  out(s"caught: {e}")
 end
 `
 },
 {
-  label: "Excepciones tipadas (structure + abort/catch)",
-  src: `-- Una estructura puede servir como un tipo de excepción propio,
--- capturable por nombre con 'catch Tipo as e'.
+  category: "Advanced (ADTs, nodes, errors)", label: "Typed exceptions (structure + abort/catch)",
+  src: `-- A structure can act as its own exception type,
+-- catchable by name with 'catch Type as e'.
 structure OutOfRange :=
   property index
   create(i) begin this'index := i end
@@ -1567,12 +1567,12 @@ check begin
   out(safe_get([1, 2, 3], 10))
 end
 catch OutOfRange as e begin
-  out(s"índice {e'index} fuera de rango")
+  out(s"index {e'index} is out of range")
 end
 `
 },
 {
-  label: "Fibonacci y lambdas",
+  category: "Advanced (ADTs, nodes, errors)", label: "Fibonacci and lambdas",
   src: `where fib(n) begin
   given n < 2:
     case T -> report n
@@ -1591,6 +1591,142 @@ out(evens)
 `
 },
 ];
+const BASIC_EXAMPLES = [
+{
+  category: "Basics", label: "Hello World",
+  src: `-- Your first Axioma program
+out("Hello, Axioma!")
+`
+},
+{
+  category: "Basics", label: "Variables and types",
+  src: `-- 'let' declares a variable. ':=' assigns a value.
+let x := 10
+let pi : RR := 3.14159
+let name := "Axioma"
+
+out(x)
+out(pi)
+out(name)
+
+-- Compound assignment operators
+x += 5
+out(x)   -- 15
+`
+},
+{
+  category: "Basics", label: "Arithmetic operators",
+  src: `let a := 17
+let b := 3
+
+out(a + b)    -- addition: 20
+out(a - b)    -- subtraction: 14
+out(a * b)    -- multiplication: 51
+out(a / b)    -- division: 5.666...
+out(a // b)   -- integer division: 5
+out(a % b)    -- modulo: 2
+out(a ** 2)   -- power: 289
+`
+},
+{
+  category: "Basics", label: "Conditionals (let / given / otherwise)",
+  src: `-- Axioma doesn't use 'if': it uses 'let <condition> begin ... end'
+let age := 20
+
+let age >= 18 begin
+  out("you're an adult")
+end given age >= 13 begin
+  out("you're a teenager")
+end otherwise begin
+  out("you're a child")
+end
+`
+},
+{
+  category: "Basics", label: "each loop (iterate over a sequence)",
+  src: `each i in {1..5} begin
+  out(s"i = {i}")
+end
+
+-- also works over lists
+each fruit in ["apple", "pear", "grape"] begin
+  out(fruit)
+end
+`
+},
+{
+  category: "Basics", label: "repeat...until loop",
+  src: `let counter := 0
+
+repeat begin
+  out(s"counter = {counter}")
+  counter += 1
+end until counter === 5
+`
+},
+{
+  category: "Basics", label: "Pattern matching (given/case)",
+  src: `where describe(n) begin
+  given n:
+    case 0 -> report "zero"
+    case 1 -> report "one"
+    case 2 -> report "two"
+    otherwise -> report "many"
+end
+
+each n in {0..3} begin
+  out(describe(n))
+end
+`
+},
+{
+  category: "Basics", label: "Functions (where)",
+  src: `where rectangle_area(width, height) begin
+  report width * height
+end
+
+where greet(name := "friend") begin
+  -- parameters can have a default value
+  report s"Hello, {name}!"
+end
+
+out(rectangle_area(4, 5))
+out(greet())
+out(greet("Mothie"))
+`
+},
+{
+  category: "Basics", label: "Lambdas and apply/select/fold",
+  src: `let double := fn(x) => x * 2
+let is_even := fn(x) => x % 2 === 0
+
+let numbers := [1, 2, 3, 4, 5, 6]
+
+out(apply(double, numbers))       -- applies to each element
+out(select(is_even, numbers))     -- filters
+out(fold(fn(a, b) => a + b, 0, numbers))  -- total sum
+`
+},
+{
+  category: "Basics", label: "Lists, sets, and maps",
+  src: `let list := [1, 2, 3]
+let set := {1, 2, 2, 3}            -- duplicates are ignored
+let map := {"name": "Axioma", "version": 1}
+
+out(list)
+out(set)
+out(map)
+out(#list)                -- length: 3
+out(list + [4, 5])        -- concatenate: [1,2,3,4,5]
+out(map["name"])          -- access by key
+
+-- list comprehension
+let squares := [x * x | x in {1..5}]
+out(squares)
+`
+},
+];
+window.__AXIOMA_EXAMPLES__ = BASIC_EXAMPLES.concat(window.__AXIOMA_EXAMPLES__);
 
 </script>
 <script>
@@ -1618,8 +1754,8 @@ out(evens)
   });
 
   // ---- Editor ------------------------------------------------------------
-  const DEFAULT_SRC = `-- Bienvenido a Axioma
--- Lista enlazada: un ejemplo mínimo de TDA (Tipo de Dato Abstracto)
+  const DEFAULT_SRC = `-- Welcome to Axioma
+-- Linked list: a minimal ADT (Abstract Data Type) example
 
 structure Node :=
   property value
@@ -1679,23 +1815,23 @@ end until is_null(cur)
   function run() {
     const src = cm.getValue();
     clearConsole();
-    setStatus("run", "ejecutando…");
+    setStatus("run", "running…");
     runBtn.disabled = true;
-    // Let the UI paint "ejecutando…" before the (synchronous) run blocks the thread.
+    // Let the UI paint "running…" before the (synchronous) run blocks the thread.
     setTimeout(() => {
       const t0 = performance.now();
       try {
         const interp = new Interpreter({ out: (s) => printLine(s) });
         interp.run(src);
         const ms = (performance.now() - t0).toFixed(1);
-        setStatus("ok", `listo en ${ms} ms`);
+        setStatus("ok", `done in ${ms} ms`);
       } catch (e) {
         if (e instanceof LexerError || e instanceof ParseError) {
           printLine(e.message, "err");
         } else if (e instanceof AxiomaError) {
           printLine(e.toString(), "err");
         } else {
-          printLine(`Error interno: ${e.message || e}`, "err");
+          printLine(`Internal error: ${e.message || e}`, "err");
         }
         setStatus("err", "error");
       } finally {
@@ -1712,11 +1848,11 @@ end until is_null(cur)
     const f = fileInput.files[0];
     if (!f) return;
     if (!f.name.endsWith(".axm")) {
-      printLine(`"${f.name}" no tiene la extensión .axm — Axioma espera archivos .axm.`, "err");
+      printLine(`"${f.name}" does not have the .axm extension — Axioma expects .axm files.`, "err");
       fileInput.value = ""; return;
     }
     const reader = new FileReader();
-    reader.onload = () => { cm.setValue(reader.result); printLine(`Cargado: ${f.name}`, "hint"); };
+    reader.onload = () => { cm.setValue(reader.result); printLine(`Loaded: ${f.name}`, "hint"); };
     reader.readAsText(f);
     fileInput.value = "";
   });
@@ -1741,12 +1877,15 @@ end until is_null(cur)
   const EXAMPLES = window.__AXIOMA_EXAMPLES__;
   const sel = document.getElementById("examples");
   const optDefault = document.createElement("option");
-  optDefault.textContent = "Ejemplos…"; optDefault.value = "";
+  optDefault.textContent = "Examples…"; optDefault.value = "";
   sel.appendChild(optDefault);
+  const groups = {};
   EXAMPLES.forEach((ex, i) => {
+    const cat = ex.category || "Examples";
+    if (!groups[cat]) { groups[cat] = document.createElement("optgroup"); groups[cat].label = cat; sel.appendChild(groups[cat]); }
     const opt = document.createElement("option");
     opt.value = i; opt.textContent = ex.label;
-    sel.appendChild(opt);
+    groups[cat].appendChild(opt);
   });
   sel.addEventListener("change", () => {
     if (sel.value === "") return;
@@ -1754,7 +1893,7 @@ end until is_null(cur)
     sel.value = "";
   });
 
-  printLine("Axioma IDE listo. Presiona «Ejecutar» o " + (navigator.platform.includes("Mac") ? "⌘" : "Ctrl") + "+Enter.", "hint");
+  printLine("Axioma IDE ready. Press Run or " + (navigator.platform.includes("Mac") ? "⌘" : "Ctrl") + "+Enter.", "hint");
 })();
 </script>
 </body>
